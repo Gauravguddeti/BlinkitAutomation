@@ -1,0 +1,32 @@
+@@CustomNote: 'SendEmail Subflow — sends shopping summary to all configured email recipients'
+@@CustomNote: 'Input variables: v_to_email, v_subject, v_summary_path, v_output_dir'
+@@CustomNote: 'Output variable: v_email_result (ok / error:...)'
+@@CustomNote: 'REQUIRES: Windows env vars GMAIL_USER and GMAIL_APP_PASSWORD'
+@@CustomNote: 'Set via cmd (as Admin): setx GMAIL_USER "your@gmail.com"'
+@@CustomNote: '                        setx GMAIL_APP_PASSWORD "your-16char-app-password"'
+
+@@CustomNote: 'Run Python email script — credentials read from environment variables, never hardcoded'
+Scripting.RunPowershellScript.RunScript Script: $'''$out = & python 'D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\scripts\send_email.py' '%v_to_email%' '%v_subject%' '%v_summary_path%' 2>&1
+Write-Output $out
+''' ScriptOutput=> v_script_output
+
+IF Contains(v_script_output, $'''EMAIL_SENT=true''', False) THEN
+    SET v_email_result TO $'''ok'''
+ELSE
+    SET v_email_result TO $'''error: %v_script_output%'''
+END
+
+@@CustomNote: 'Log email result'
+Scripting.RunPowershellScript.RunScript Script: $'''Add-Content 'D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output\run_log.txt' -Value "[Email] %v_email_result%" -Encoding UTF8''' ScriptOutput=> PowershellOutput
+
+@@CustomNote: 'Screenshot at time of email send'
+Scripting.RunPowershellScript.RunScript Script: $'''Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$scr = [System.Windows.Forms.Screen]::PrimaryScreen
+$bmp = New-Object System.Drawing.Bitmap $scr.Bounds.Width, $scr.Bounds.Height
+$gfx = [System.Drawing.Graphics]::FromImage($bmp)
+$gfx.CopyFromScreen($scr.Bounds.Location, [System.Drawing.Point]::Empty, $scr.Bounds.Size)
+$bmp.Save('D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output\screenshots\email_sent.png')
+$gfx.Dispose(); $bmp.Dispose()
+Write-Output "SHOT_OK=email"
+''' ScriptOutput=> PowershellOutput13

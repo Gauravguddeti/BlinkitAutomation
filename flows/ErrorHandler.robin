@@ -1,0 +1,32 @@
+@@CustomNote: 'ErrorHandler Subflow — logs error, takes screenshot, sends failure email'
+@@CustomNote: 'Input variables: v_step_name, v_error_message, v_to_email, v_output_dir'
+
+DateTime.GetCurrentDateTime.Local DateTimeFormat: DateTime.DateTimeFormat.DateAndTime CurrentDateTime=> CurrentDateTime
+Text.ConvertDateTimeToText.FromCustomDateTime DateTime: CurrentDateTime CustomFormat: $'''yyyy-MM-dd HH:mm:ss''' Result=> v_err_time
+
+@@CustomNote: 'Log the error to run_log.txt'
+Scripting.RunPowershellScript.RunScript Script: $'''$dir = 'D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output'
+if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+Add-Content "$dir\run_log.txt" -Value "[ERROR][%v_err_time%] Step: %v_step_name% | %v_error_message%" -Encoding UTF8
+''' ScriptOutput=> v_log_result
+
+@@CustomNote: 'Capture error screenshot'
+Workstation.TakeScreenshot.TakeScreenshotAndSaveToFile File: $'''D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output\screenshots\error_%v_step_name%.png''' ImageFormat: System.ImageFormat.Png
+
+@@CustomNote: 'Send failure email — credentials come from Windows Environment Variables GMAIL_USER and GMAIL_APP_PASSWORD'
+@@CustomNote: 'Set them via: setx GMAIL_USER "your@gmail.com" and setx GMAIL_APP_PASSWORD "xxxx" in cmd as Administrator'
+Scripting.RunPowershellScript.RunScript Script: $'''$user = $env:GMAIL_USER
+$pass = $env:GMAIL_APP_PASSWORD
+if (-not $user -or -not $pass) {
+    Write-Output "FAILURE_EMAIL_SKIPPED: env vars not set"
+    exit 0
+}
+$body = "FLOW FAILURE`nTime: %v_err_time%`nStep: %v_step_name%`nError: %v_error_message%`n`nNo order was placed."
+$body | Set-Content 'D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output\failure_body.txt' -Encoding UTF8
+$secPw = ConvertTo-SecureString $pass -AsPlainText -Force
+$cred = New-Object System.Management.Automation.PSCredential($user, $secPw)
+try {
+  Send-MailMessage -SmtpServer smtp.gmail.com -Port 587 -UseSsl -Credential $cred -From $user -To "%v_to_email%" -Subject "Flow ERROR at: %v_step_name%" -Body $body -Encoding UTF8
+  Write-Output "FAILURE_EMAIL_SENT=true"
+} catch { Write-Output "FAILURE_EMAIL_ERROR: $_" }
+''' ScriptOutput=> v_err_email_result

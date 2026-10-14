@@ -1,0 +1,40 @@
+@@CustomNote: 'SendWhatsApp Subflow — sends short summary to WhatsApp via WhatsApp Web deep link'
+@@CustomNote: 'Input variables: v_short_summary_path, v_phone, v_output_dir'
+@@CustomNote: 'Output variable: v_wa_result'
+@@CustomNote: 'REQUIRES: WhatsApp Web must be logged in on the default browser before running'
+
+@@CustomNote: 'Read the short summary text (one-line WA message)'
+File.ReadTextFromFile.ReadText File: v_short_summary_path Encoding: File.TextFileEncoding.UTF8 Content=> v_wa_body
+
+@@CustomNote: 'URL-encode message, open WhatsApp Web deep link in default browser, press Enter to send'
+Scripting.RunPowershellScript.RunScript Script: $'''$msg     = '%v_wa_body%'
+$encoded = [System.Uri]::EscapeDataString($msg)
+$phone   = '%v_phone%'.Trim()
+$url     = "https://web.whatsapp.com/send?phone=$phone&text=$encoded"
+
+# Opens in system default browser where WhatsApp Web is logged in
+Start-Process $url
+Start-Sleep -Seconds 14
+
+# Press Enter to send the pre-filled message
+Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+Start-Sleep -Seconds 3
+
+Write-Output "WA_SENT"
+''' ScriptOutput=> v_wa_send_result
+
+WAIT 3
+SET v_wa_result TO $'''sent'''
+
+@@CustomNote: 'Screenshot confirming WhatsApp message sent'
+Scripting.RunPowershellScript.RunScript Script: $'''Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$scr = [System.Windows.Forms.Screen]::PrimaryScreen
+$bmp = New-Object System.Drawing.Bitmap $scr.Bounds.Width, $scr.Bounds.Height
+$gfx = [System.Drawing.Graphics]::FromImage($bmp)
+$gfx.CopyFromScreen($scr.Bounds.Location, [System.Drawing.Point]::Empty, $scr.Bounds.Size)
+$bmp.Save('D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output\screenshots\whatsapp_sent.png')
+$gfx.Dispose(); $bmp.Dispose()
+Write-Output "SHOT_OK=whatsapp"
+''' ScriptOutput=> PowershellOutput12

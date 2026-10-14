@@ -1,0 +1,94 @@
+@@CustomNote: 'Main Subflow — orchestrator. Reads config, calls subflows in order.'
+@@CustomNote: 'No logic here — delegates everything to ShoppingProcess, SendEmail, SendWhatsApp, ErrorHandler'
+
+@@CustomNote: '--- Read config ---'
+Scripting.RunPowershellScript.RunScript Script: $'''$s = Get-Content 'D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\config\settings.json' -Raw | ConvertFrom-Json
+Write-Output $s.delivery.address
+''' ScriptOutput=> v_address
+
+Scripting.RunPowershellScript.RunScript Script: $'''$s = Get-Content 'D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\config\settings.json' -Raw | ConvertFrom-Json
+Write-Output $s.delivery.pincode
+''' ScriptOutput=> v_pincode
+
+Scripting.RunPowershellScript.RunScript Script: $'''$s = Get-Content 'D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\config\settings.json' -Raw | ConvertFrom-Json
+Write-Output $s.budget_inr
+''' ScriptOutput=> v_budget_str
+
+Text.ToNumber Text: v_budget_str Number=> v_budget
+
+@@CustomNote: 'Set recipients directly — edit these to add/remove email recipients'
+SET v_to_email TO $'''guddetigaurav1@gmail.com,insaneboi685@gmail.com,universalviewer69@gmail.com'''
+SET v_phone TO $'''917276082005'''
+SET v_output_dir TO $'''D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output'''
+
+@@CustomNote: 'Read shopping list from items.csv'
+File.ReadFromCSVFile.ReadCSVWithCustomSeparator CSVFile: $'''D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\config\items.csv''' Encoding: File.CSVEncoding.UTF8 TrimFields: True FirstLineContainsColumnNames: True CustomColumnsSeparator: $''',''' CSVTable=> v_items_table
+
+@@CustomNote: 'Timestamp for this run'
+DateTime.GetCurrentDateTime.Local DateTimeFormat: DateTime.DateTimeFormat.DateAndTime CurrentDateTime=> CurrentDateTime2
+Text.ConvertDateTimeToText.FromCustomDateTime DateTime: CurrentDateTime2 CustomFormat: $'''yyyy-MM-dd HH:mm:ss''' Result=> v_timestamp_str
+
+@@CustomNote: 'Init output directory and start run log'
+Scripting.RunPowershellScript.RunScript Script: $'''$out = 'D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output'
+New-Item -ItemType Directory -Path "$out\screenshots" -Force | Out-Null
+Set-Content -Path "$out\run_log.txt" -Value "=== Run started: %v_timestamp_str% ===" -Encoding UTF8
+Write-Output "INIT_OK"
+''' ScriptOutput=> PowershellOutput7
+
+@@CustomNote: 'Set summary file paths (used by build_summary, SendEmail, SendWhatsApp)'
+SET v_subject TO $'''Blinkit Shopping Summary - %v_timestamp_str%'''
+SET v_summary_path TO $'''D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output\summary.txt'''
+SET v_short_summary_path TO $'''D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output\summary_short.txt'''
+
+@@CustomNote: '--- Main flow execution ---'
+CALL ShoppingProcess
+
+@@CustomNote: 'Build summary files (summary.txt and summary_short.txt)'
+Scripting.RunPowershellScript.RunScript Script: $'''$cart   = '%v_cart_total%'
+$budget = '%v_budget%'
+$over   = '%v_over_budget%'
+$ts     = '%v_timestamp_str%'
+$addr   = '%v_address%'
+
+$status = if ($over -eq 'True') { 'OVER BUDGET!' } else { 'within budget' }
+
+$shortLine = "Blinkit run done! Cart: Rs$cart / Budget: Rs$budget | $status | Items: milk, bread, yogurt | No order placed."
+
+$longText = @"
+========================================
+Blinkit Grocery Run Summary
+========================================
+Run time : $ts
+Address  : $addr
+Cart     : Rs$cart
+Budget   : Rs$budget
+Status   : $status
+Items    : milk, bread, yogurt
+Guard    : No order placed
+========================================
+"@
+
+$lp = '%v_summary_path%'
+$sp = '%v_short_summary_path%'
+
+[System.IO.File]::WriteAllText($lp, $longText, [System.Text.Encoding]::UTF8)
+[System.IO.File]::WriteAllText($sp, $shortLine, [System.Text.Encoding]::UTF8)
+
+Write-Output "SUMMARY_OK"
+''' ScriptOutput=> v_build_output
+
+CALL SendEmail
+CALL SendWhatsApp
+
+@@CustomNote: 'Final log entry'
+Scripting.RunPowershellScript.RunScript Script: $'''Add-Content '%v_output_dir%\run_log.txt' -Value "=== Run completed successfully: %v_timestamp_str% ===" -Encoding UTF8
+''' ScriptOutput=> PowershellOutput8
+
+Display.ShowMessageDialog.ShowMessage Title: $'''Grocery Assistant Complete''' Message: $'''All done! No order was placed.
+
+Summary file: %v_summary_path%
+Email sent to: %v_to_email%
+WhatsApp sent to: %v_phone%
+Guard result: %v_guard_result%
+
+Open output\ to see screenshots and run_log.txt.''' Icon: Display.Icon.None Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: False ButtonPressed=> ButtonPressed4

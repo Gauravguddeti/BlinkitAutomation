@@ -1,0 +1,367 @@
+@@CustomNote: 'ShoppingProcess Subflow — core Blinkit automation'
+@@CustomNote: 'Opens Blinkit in Edge, searches each item, picks cheapest within max_price, adds to cart'
+@@CustomNote: 'Then reads cart total, checks budget, runs checkout guard'
+@@CustomNote: 'Input variables: v_items_table, v_budget, v_output_dir, v_address, v_pincode, v_timestamp_str'
+@@CustomNote: 'Output variables: v_cart_total, v_over_budget, v_guard_result, v_cart_json'
+
+@@CustomNote: '--- Open Blinkit in Edge ---'
+WebAutomation.LaunchEdge.LaunchEdge Url: $'''https://blinkit.com''' ClearCache: False ClearCookies: False WindowState: WebAutomation.BrowserWindowState.Normal WaitForPageToLoadTimeout: 60 Timeout: 60 BrowserInstance=> v_browser
+WAIT 2
+
+@@CustomNote: 'Wait for user to confirm Blinkit is loaded (handles login/OTP if needed)'
+Display.ShowMessageDialog.ShowMessage Title: $'''Blinkit Loading''' Message: $'''Is Blinkit home page fully visible in Edge?
+If you see a LOGIN screen, complete the login now (OTP on your phone).
+
+Click OK only after the home page is showing.''' Icon: Display.Icon.None Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: False ButtonPressed=> ButtonPressed
+
+@@CustomNote: '--- Shopping loop: process each item in items.csv ---'
+SET v_item_results_json TO $'''['''
+SET v_items_first TO $'''True'''
+
+LOOP FOREACH v_row IN v_items_table
+    @@CustomNote: 'Extract item fields from CSV row (Set variable avoids PowerShell newline corruption)'
+    SET v_item_name TO v_row['item']
+    SET v_item_qty TO v_row['qty']
+    SET v_item_maxp TO v_row['max_price']
+
+    @@CustomNote: 'Navigate directly to search URL (avoids autocomplete dropdown)'
+    WebAutomation.GoToWebPage.GoToWebPage BrowserInstance: v_browser Url: $'''https://blinkit.com/s/?q=%v_item_name%''' WaitForPageToLoadTimeout: 60
+    WAIT 3
+
+    @@CustomNote: 'Page diagnostics — logs url, readyState, ADD element count'
+    WebAutomation.ExecuteJavascript BrowserInstance: v_browser Javascript: $'''function ExecuteScript() {
+    try {
+        var allButtons = document.querySelectorAll('button');
+        var addCount = 0;
+        var allEls = document.querySelectorAll('*');
+        for (var i = 0; i < allEls.length; i++) {
+            var t = (allEls[i].innerText || '').trim().toUpperCase();
+            if (t === 'ADD') addCount++;
+        }
+        return JSON.stringify({
+            url: location.href,
+            title: document.title,
+            readyState: document.readyState,
+            buttonCount: allButtons.length,
+            addElCount: addCount,
+            bodySnippet: (document.body ? document.body.innerText.substring(0, 150) : 'NO_BODY')
+        });
+    } catch(e) { return 'DIAG_ERROR:' + e.message; }
+}
+''' Result=> v_page_diag
+
+    Scripting.RunPowershellScript.RunScript Script: $'''Add-Content 'D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output\run_log.txt' -Value "[DIAG] %v_item_name%: %v_page_diag%" -Encoding UTF8
+''' ScriptOutput=> PowershellOutput14
+
+    @@CustomNote: 'Screenshot of search results page'
+    Scripting.RunPowershellScript.RunScript Script: $'''Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$scr = [System.Windows.Forms.Screen]::PrimaryScreen
+$bmp = New-Object System.Drawing.Bitmap $scr.Bounds.Width, $scr.Bounds.Height
+$gfx = [System.Drawing.Graphics]::FromImage($bmp)
+$gfx.CopyFromScreen($scr.Bounds.Location, [System.Drawing.Point]::Empty, $scr.Bounds.Size)
+$name = '%v_item_name%' -replace '[^a-zA-Z0-9_]',''
+$path = 'D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output\screenshots\search_' + $name + '.png'
+$bmp.Save($path)
+$gfx.Dispose(); $bmp.Dispose()
+Write-Output "SHOT_OK=$path"
+''' ScriptOutput=> PowershellOutput9
+
+    MouseAndKeyboard.SendKeys.FocusAndSendKeys TextToSend: $'''{Escape}''' DelayBetweenKeystrokes: 10 SendTextAsHardwareKeys: False
+    WAIT 1
+
+    @@CustomNote: 'GetAndAddBest — scans all ADD div elements, finds prices via DOM ancestor walk'
+    @@CustomNote: 'Picks a RANDOM product within max_price (not always cheapest, for variety)'
+    WebAutomation.ExecuteJavascript BrowserInstance: v_browser Javascript: $'''function ExecuteScript() {
+    try {
+        var maxPrice = parseFloat('%v_item_maxp%');
+        if (isNaN(maxPrice) || maxPrice <= 0) maxPrice = 999;
+
+        // Find all visible ADD controls (Blinkit uses <div> not <button>)
+        var allEls = document.querySelectorAll('*');
+        var addEls = [];
+        for (var i = 0; i < allEls.length; i++) {
+            if (!allEls[i].offsetParent) continue;
+            var rawTxt = (allEls[i].innerText || allEls[i].textContent || '').trim().toUpperCase();
+            if (rawTxt === 'ADD') addEls.push(allEls[i]);
+        }
+        if (addEls.length === 0) return 'FAIL,NO_ADD_DIVS,0,0';
+
+        // Walk up DOM to find price associated with each ADD control
+        var products = [];
+        for (var j = 0; j < addEls.length; j++) {
+            var anc = addEls[j].parentElement;
+            for (var d = 0; d < 12; d++) {
+                if (!anc) break;
+                var ancTxt = anc.innerText || '';
+                var pm = ancTxt.match(/\u20B9\s*(\d+)/g);
+                if (pm && pm.length >= 1 && pm.length <= 6) {
+                    var prices = pm.map(function(p) {
+                        return parseInt(p.replace(/[^0-9]/g, ''));
+                    }).filter(function(v) { return v > 5; });
+                    prices.sort(function(a, b) { return a - b; });
+                    var price = prices[0];
+                    var lines = ancTxt.split('\n')
+                        .map(function(l) { return l.trim(); })
+                        .filter(function(l) {
+                            return l.length > 4 &&
+                                   l.charAt(0) !== '\u20B9' &&
+                                   l.toUpperCase().indexOf('ADD') === -1 &&
+                                   !/^\d+(g|ml|kg|L)/i.test(l);
+                        });
+                    var name = (lines[0] || 'Product').substring(0, 40).replace(/[,|]/g, '');
+                    products.push({ price: price, name: name, el: addEls[j] });
+                    break;
+                }
+                anc = anc.parentElement;
+            }
+        }
+
+        if (products.length === 0) return 'FAIL,NO_PRICE_FOUND,0,0';
+
+        // Filter to products within max_price
+        var valid = products.filter(function(p) { return p.price <= maxPrice; });
+        if (valid.length === 0) {
+            return 'SKIP,ALL_OVER_RS' + maxPrice + ',0,' + products.length;
+        }
+
+        // Pick a RANDOM product from valid options
+        var best = valid[Math.floor(Math.random() * valid.length)];
+        best.el.click();
+        return 'ADDED,' + best.name + ',' + best.price + ',' + valid.length;
+
+    } catch(e) { return 'FAIL,ERR:' + e.message.substring(0, 30) + ',0,0'; }
+}
+''' Result=> v_add_result
+
+    WAIT 2
+
+    @@CustomNote: 'HandleVariantPopup — if a size/variant popup appears, picks cheapest valid option'
+    WebAutomation.ExecuteJavascript BrowserInstance: v_browser Javascript: $'''function ExecuteScript() {
+    try {
+        var popup = document.querySelector(
+            '[class*="VariantModal"],[class*="variant-modal"],[class*="UpdatedVariant"],' +
+            '[class*="ItemVariant"],[class*="VariantSelector"],[class*="Variant"]'
+        );
+        if (!popup) return 'NO_POPUP';
+
+        var popEls = popup.querySelectorAll('button, div, span');
+        var options = [];
+        for (var i = 0; i < popEls.length; i++) {
+            var el = popEls[i];
+            if (!el.offsetParent) continue;
+            var txt = (el.innerText || '').trim().toUpperCase();
+            if (txt !== 'ADD') continue;
+            var anc = el.parentElement;
+            for (var d = 0; d < 5; d++) {
+                if (!anc) break;
+                var pm = (anc.innerText || '').match(/\u20B9\s*(\d+)/);
+                if (pm) {
+                    options.push({ price: parseInt(pm[1]), el: el });
+                    break;
+                }
+                anc = anc.parentElement;
+            }
+        }
+
+        if (options.length === 0) return 'POPUP_NO_OPTIONS';
+        var valid = options.filter(function(o){ return o.price <= parseFloat('%v_item_maxp%'); });
+        var pick = valid.length > 0
+            ? valid.sort(function(a,b){ return a.price-b.price; })[0]
+            : options.sort(function(a,b){ return a.price-b.price; })[0];
+        pick.el.click();
+        return 'POPUP_CLICKED_RS' + pick.price;
+
+    } catch(e) { return 'POPUP_ERR:' + e.message.substring(0,20); }
+}
+''' Result=> v_popup_result
+
+    WAIT 2
+
+    @@CustomNote: 'Log add result'
+    File.WriteText File: $'''D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output\run_log.txt''' TextToWrite: $'''[ADD] %v_item_name%: %v_add_result% | POPUP: %v_popup_result%''' AppendNewLine: True IfFileExists: File.IfFileExists.Append Encoding: File.FileEncoding.UTF8
+
+    @@CustomNote: 'Parse result for JSON entry'
+    Scripting.RunPowershellScript.RunScript Script: $'''$raw    = '%v_add_result%'
+$parts  = $raw -split ','
+$status = if ($parts.Count -gt 0) { $parts[0].Trim() } else { 'FAIL' }
+$detail = if ($parts.Count -gt 1) { $parts[1].Trim() } else { 'unknown' }
+$price  = if ($parts.Count -gt 2) { $parts[2].Trim() } else { '0' }
+Write-Output "STATUS=$status"
+Write-Output "CHOSEN=$detail"
+Write-Output "PRICE=$price"
+''' ScriptOutput=> v_add_parsed
+
+    Scripting.RunPowershellScript.RunScript Script: $'''(('%v_add_parsed%' -split "`n") | Where-Object { $_ -match '^STATUS=' }) -replace '^STATUS=',''
+''' ScriptOutput=> v_item_status
+    Scripting.RunPowershellScript.RunScript Script: $'''(('%v_add_parsed%' -split "`n") | Where-Object { $_ -match '^CHOSEN=' }) -replace '^CHOSEN=',''
+''' ScriptOutput=> v_chosen_name
+    Scripting.RunPowershellScript.RunScript Script: $'''(('%v_add_parsed%' -split "`n") | Where-Object { $_ -match '^PRICE=' }) -replace '^PRICE=',''
+''' ScriptOutput=> v_chosen_price
+
+    WAIT 1
+
+    Scripting.RunPowershellScript.RunScript Script: $'''$name    = "%v_item_name%"
+$product = "%v_chosen_name%"
+$price   = "%v_chosen_price%"
+$qty     = "%v_item_qty%"
+if (-not $price -or $price -eq '') { $price = "0" }
+if (-not $qty   -or $qty   -eq '') { $qty   = "1" }
+$entry = '{"name":"' + $name + '","chosen_product":"' + $product + '","unit_price":' + $price + ',"qty":' + $qty + ',"status":"ok"}'
+Write-Output $entry
+''' ScriptOutput=> v_item_entry
+
+    IF v_items_first = $'''True''' THEN
+        SET v_item_results_json TO $'''%v_item_results_json%%v_item_entry%'''
+        SET v_items_first TO $'''False'''
+    ELSE
+        SET v_item_results_json TO $'''%v_item_results_json%,%v_item_entry%'''
+    END
+END
+
+@@CustomNote: '--- Open cart sidebar to read total ---'
+WebAutomation.ExecuteJavascript BrowserInstance: v_browser Javascript: $'''function ExecuteScript() {
+    var cartBtn = document.querySelector(
+        'a[href*="cart"], button[class*="Cart"], div[class*="CartIcon"], ' +
+        'div[class*="cart-icon"], div[class*="HeaderCart"]'
+    );
+    if (cartBtn) { cartBtn.click(); return "CART_OPENED"; }
+    return "CART_NOT_FOUND";
+}
+''' Result=> v_cart_open_result
+
+WAIT 8
+
+@@CustomNote: 'Screenshot of cart with all items'
+Scripting.RunPowershellScript.RunScript Script: $'''Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$scr = [System.Windows.Forms.Screen]::PrimaryScreen
+$bmp = New-Object System.Drawing.Bitmap $scr.Bounds.Width, $scr.Bounds.Height
+$gfx = [System.Drawing.Graphics]::FromImage($bmp)
+$gfx.CopyFromScreen($scr.Bounds.Location, [System.Drawing.Point]::Empty, $scr.Bounds.Size)
+$bmp.Save('D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output\screenshots\cart_before.png')
+$gfx.Dispose(); $bmp.Dispose()
+Write-Output "SHOT_OK=cart_before"
+''' ScriptOutput=> PowershellOutput10
+
+@@CustomNote: 'GetCartTotal — 5-strategy fallback to read grand total from cart sidebar'
+WebAutomation.ExecuteJavascript BrowserInstance: v_browser Javascript: $'''function ExecuteScript() {
+    try {
+        var txt = document.body.innerText || '';
+
+        // Strategy 1: "TOTAL" keyword near price
+        var m1 = txt.match(/[\u20B9Rs\.]+\s*(\d+)\s*[\n\r\s]*TOTAL/i);
+        if (m1 && parseInt(m1[1]) > 0) return m1[1];
+
+        // Strategy 2: "Proceed" near price
+        var m2 = txt.match(/[\u20B9Rs\.]+\s*(\d+)\s*[\n\r]*\s*Proceed/i);
+        if (m2 && parseInt(m2[1]) > 0) return m2[1];
+
+        // Strategy 3: "Grand total" row
+        var m3 = txt.match(/Grand\s*total\D+(\d+)/i);
+        if (m3 && parseInt(m3[1]) > 0) return m3[1];
+
+        // Strategy 4: All numbers with currency symbol, return largest
+        var allNums = [];
+        var re = /[\u20B9\u0930\u0938]\s*(\d+)/g;
+        var m; while ((m = re.exec(txt)) !== null) {
+            var v = parseInt(m[1]);
+            if (v >= 10 && v <= 9999) allNums.push(v);
+        }
+        if (allNums.length > 0) {
+            allNums.sort(function(a,b){return b-a;});
+            return String(allNums[0]);
+        }
+
+        // Strategy 5: Any number near "total"
+        var m5 = txt.match(/total[^0-9]*(\d+)/i);
+        if (m5) return m5[1];
+
+        return '0';
+    } catch(e) { return '0'; }
+}
+''' Result=> v_cart_total_str
+
+Scripting.RunPowershellScript.RunScript Script: $'''$raw = '%v_cart_total_str%'
+$raw = $raw.Trim()
+if ($raw -match '^(\d{1,5})') { Write-Output $Matches[1] }
+else { Write-Output '0' }
+''' ScriptOutput=> v_cart_total_str
+
+Text.ToNumber Text: v_cart_total_str Number=> v_cart_total
+
+@@CustomNote: '--- Budget check ---'
+IF v_cart_total > v_budget THEN
+    SET v_over_budget TO $'''True'''
+    Scripting.RunPowershellScript.RunScript Script: $'''Add-Content '%v_output_dir%\run_log.txt' -Value "[WARN] Cart Rs%v_cart_total% exceeds budget Rs%v_budget%" -Encoding UTF8
+''' ScriptOutput=> PowershellOutput3
+    Display.ShowMessageDialog.ShowMessage Title: $'''Over Budget''' Message: $'''Cart total Rs%v_cart_total% exceeds your budget of Rs%v_budget%.
+The summary will record this. No order will be placed.''' Icon: Display.Icon.None Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: False ButtonPressed=> ButtonPressed2
+ELSE
+    SET v_over_budget TO $'''False'''
+    Scripting.RunPowershellScript.RunScript Script: $'''Add-Content '%v_output_dir%\run_log.txt' -Value "[OK] Cart Rs%v_cart_total% within budget Rs%v_budget%" -Encoding UTF8''' ScriptOutput=> PowershellOutput4
+END
+
+@@CustomNote: 'Final cart screenshot'
+Scripting.RunPowershellScript.RunScript Script: $'''Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$scr = [System.Windows.Forms.Screen]::PrimaryScreen
+$bmp = New-Object System.Drawing.Bitmap $scr.Bounds.Width, $scr.Bounds.Height
+$gfx = [System.Drawing.Graphics]::FromImage($bmp)
+$gfx.CopyFromScreen($scr.Bounds.Location, [System.Drawing.Point]::Empty, $scr.Bounds.Size)
+$bmp.Save('D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output\screenshots\cart_final.png')
+$gfx.Dispose(); $bmp.Dispose()
+Write-Output "SHOT_OK=cart_final"
+''' ScriptOutput=> PowershellOutput11
+
+@@CustomNote: '--- CHECKOUT GUARD — CRITICAL SAFETY FEATURE ---'
+@@CustomNote: 'Scans page for payment/checkout elements. Stops flow immediately if found.'
+WebAutomation.ExecuteJavascript BrowserInstance: v_browser Javascript: $'''function ExecuteScript() {
+    try {
+        var dangerSelectors = [
+            'div[class*="Payment"]',
+            'div[class*="payment"]',
+            'input[placeholder*="card"]',
+            'input[placeholder*="UPI"]',
+            'div[class*="Checkout"]',
+            'div[class*="checkout"]',
+            'button[class*="PayNow"]',
+            'div[class*="OrderSummary"]'
+        ];
+        for (var i = 0; i < dangerSelectors.length; i++) {
+            var el = document.querySelector(dangerSelectors[i]);
+            if (el && el.offsetParent !== null) {
+                return "DANGER:" + dangerSelectors[i];
+            }
+        }
+        // Also check page text for checkout keywords
+        var txt = document.body.innerText || '';
+        var dangerWords = ['Proceed To Pay', 'Place Order', 'Pay Now', 'Enter UPI'];
+        for (var j = 0; j < dangerWords.length; j++) {
+            if (txt.indexOf(dangerWords[j]) !== -1) {
+                return "DANGER:text=" + dangerWords[j];
+            }
+        }
+        var cartSidebar = document.querySelector(
+            'div[class*="CartWidget"], div[class*="MyCart"], div[class*="CartContainer"]'
+        );
+        if (cartSidebar) return "SAFE:cart_sidebar_visible";
+        return "SAFE:no_payment_elements_detected";
+    } catch(e) { return "SAFE:guard_error_" + e.message; }
+}
+''' Result=> v_guard_result
+
+IF StartsWith(v_guard_result, $'''DANGER''', False) THEN
+    Scripting.RunPowershellScript.RunScript Script: $'''Add-Content '%v_output_dir%\run_log.txt' -Value "[CRITICAL] CHECKOUT GUARD TRIGGERED: %v_guard_result%" -Encoding UTF8
+''' ScriptOutput=> PowershellOutput5
+    Display.ShowMessageDialog.ShowMessage Title: $'''🛑 GUARD TRIGGERED — Flow Stopped''' Message: $'''A payment or checkout element was detected on screen.
+Guard result: %v_guard_result%
+
+The flow has been stopped immediately. No order was placed.''' Icon: Display.Icon.None Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: False ButtonPressed=> ButtonPressed3
+END
+
+Scripting.RunPowershellScript.RunScript Script: $'''Add-Content '%v_output_dir%\run_log.txt' -Value "[OK] Checkout guard: %v_guard_result%. No order placed." -Encoding UTF8''' ScriptOutput=> PowershellOutput6
+
+WebAutomation.CloseWebBrowser BrowserInstance: v_browser
+
+SET v_item_results_json TO $'''%v_item_results_json%]'''
