@@ -1,0 +1,19 @@
+# Secrets — NEVER commit these
+.env
+
+# Demo video — too large for GitHub (235MB). Included in Google Drive submission.
+DemoRecording.mp4
+
+# Runtime output — keep screenshots and summary, exclude log with personal data
+output/run_log.txt
+output/failure_body.txt
+output/wa_temp.txt
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Windows
+Thumbs.db
+desktop.ini

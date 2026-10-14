@@ -1,0 +1,19 @@
+{
+  "delivery": {
+    "address": "Kondhwa Khurd, Pune",
+    "pincode": "411048",
+    "city": "Pune"
+  },
+  "budget_inr": 300,
+  "low_budget_test_inr": 50,
+  "search_results_to_read": 5,
+  "recipients": {
+    "email": "guddetigaurav1@gmail.com,insaneboi685@gmail.com,universalviewer69@gmail.com",
+    "whatsapp_number": "917276082005"
+  },
+  "browser": "chrome",
+  "browser_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "output_dir": "D:\\projects\\ineede assingment\\gigacoreEnergy\\grocery-assistant\\output",
+  "blinkit_url": "https://blinkit.com",
+  "whatsapp_url": "https://web.whatsapp.com"
+}

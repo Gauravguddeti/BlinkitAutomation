@@ -1,0 +1,104 @@
+==============================================================
+  SUBFLOW: SendWhatsApp
+  Role: Sends the short summary to WhatsApp using the
+        WhatsApp Web deep-link with a pre-filled message.
+        The browser must already be logged into WhatsApp Web.
+==============================================================
+
+INPUT VARIABLES:
+  v_phone               (Text — E.164 digits, no +, e.g. 917276082005)
+  v_short_summary_path  (Text — absolute path to summary_short.txt)
+  v_output_dir          (Text)
+
+OUTPUT VARIABLES:
+  v_wa_result  (Text: "sent" or "error: ...")
+
+--------------------------------------------------------------
+1. Read short summary
+--------------------------------------------------------------
+Action: Read text from file
+  File: %v_short_summary_path%
+  Encoding: UTF-8
+Store in: v_wa_body
+
+--------------------------------------------------------------
+2. Write body to temp file and URL-encode
+--------------------------------------------------------------
+Action: Write text to file
+  File: %v_output_dir%\wa_temp.txt
+  Text: %v_wa_body%
+  If exists: Overwrite
+  Encoding: UTF-8
+
+Action: Run PowerShell script
+  Script:
+    $text    = Get-Content '%v_output_dir%\wa_temp.txt' -Raw -Encoding UTF8
+    $encoded = [uri]::EscapeDataString($text.Trim())
+    Write-Output $encoded
+Store in: v_wa_encoded
+
+--------------------------------------------------------------
+3. Build WhatsApp Web URL
+--------------------------------------------------------------
+Action: Set variable
+  v_wa_url = https://web.whatsapp.com/send?phone=%v_phone%&text=%v_wa_encoded%
+
+--------------------------------------------------------------
+4. Open Brave and send message (single PowerShell action — tested working)
+--------------------------------------------------------------
+Action: Run PowerShell script
+  Script:
+    $brave = "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+    Start-Process $brave -ArgumentList "--new-window", "%v_wa_url%"
+    Start-Sleep 10
+    Add-Type -AssemblyName System.Windows.Forms
+    [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+    Start-Sleep 2
+    Write-Output "WA_SENT=true"
+  Store in: v_wa_send_result
+
+  Note: The 10-second sleep gives WhatsApp Web time to load the chat fully.
+        Windows Forms SendKeys fires Enter while Brave still has focus.
+        If WA Web is not logged in, a QR screen will appear — scan it and
+        re-run the flow. The message will be in the compose box already.
+        Increase Start-Sleep to 15 if your connection is slow.
+
+--------------------------------------------------------------
+7. Screenshot and log
+--------------------------------------------------------------
+Action: Take screenshot
+  Save to: %v_output_dir%\screenshots\whatsapp_sent.png
+
+Action: Set variable  v_wa_result = sent
+
+Action: Write text to file (append)
+  File: %v_output_dir%\run_log.txt
+  Text: [OK] WhatsApp sent to %v_phone%
+
+--------------------------------------------------------------
+8. Close browser window
+--------------------------------------------------------------
+Action: Close web browser  (or leave open — user's preference)
+
+[Return v_wa_result]
+
+--------------------------------------------------------------
+STANDALONE TEST
+--------------------------------------------------------------
+Prerequisites: WhatsApp Web must be open and logged in in your browser.
+
+Create a test flow named "TestWhatsApp" in PAD:
+  1. Set variable  v_phone              = 917276082005
+  2. Set variable  v_short_summary_path = D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output\summary_short.txt
+  3. Set variable  v_output_dir         = D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output
+  4. Run subflow: SendWhatsApp
+  5. Display message: %v_wa_result%
+Run the test flow → confirm the message arrives on your phone.
+
+Note: If the browser does not support the WhatsApp Web deep-link method,
+an alternative is to use the Twilio WhatsApp Sandbox API (documented
+separately) via a PowerShell Invoke-RestMethod call in the subflow.
+
+==============================================================
+END OF SendWhatsApp
+==============================================================

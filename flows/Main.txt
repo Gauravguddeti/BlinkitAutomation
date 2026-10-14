@@ -1,0 +1,107 @@
+==============================================================
+  SUBFLOW: Main
+  Role: Orchestrator — loads config, initialises variables,
+        calls subflows in sequence. Contains no business logic.
+==============================================================
+
+INPUT  : none (reads from files)
+OUTPUT : none (side effects: summary, emails, WhatsApp, screenshots)
+
+--------------------------------------------------------------
+1. Read settings
+--------------------------------------------------------------
+Action: Run PowerShell script
+Script:
+  $s = Get-Content 'D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\config\settings.json' | ConvertFrom-Json
+  Write-Output "ADDRESS=$($s.delivery.address)"
+  Write-Output "PINCODE=$($s.delivery.pincode)"
+  Write-Output "BUDGET=$($s.budget_inr)"
+  Write-Output "EMAIL=$($s.recipients.email)"
+  Write-Output "WHATSAPP=$($s.recipients.whatsapp_number)"
+  Write-Output "OUTPUT_DIR=$($s.output_dir)"
+Store output in: v_settings_output
+
+--------------------------------------------------------------
+2. Parse settings into variables
+--------------------------------------------------------------
+Action: For each line in v_settings_output (split by newline):
+  Split line by "=" into key / value
+  If key == ADDRESS    → Set variable v_address    = value
+  If key == PINCODE    → Set variable v_pincode    = value
+  If key == BUDGET     → Set variable v_budget_str = value → Convert to number → v_budget
+  If key == EMAIL      → Set variable v_email      = value
+  If key == WHATSAPP   → Set variable v_whatsapp   = value
+  If key == OUTPUT_DIR → Set variable v_output_dir = value
+
+--------------------------------------------------------------
+3. Read items list
+--------------------------------------------------------------
+Action: Read from CSV file
+  File: D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\config\items.csv
+  First line = column names: Yes
+Store in: v_items_table   (DataTable)
+
+--------------------------------------------------------------
+4. Timestamp
+--------------------------------------------------------------
+Action: Get current date and time → CurrentDateTime
+Action: Convert datetime to text (format: yyyy-MM-dd HH:mm:ss) → v_timestamp_str
+
+--------------------------------------------------------------
+5. Initialise run log
+--------------------------------------------------------------
+Action: Write text to file
+  File: %v_output_dir%\run_log.txt
+  Text: === Run started: %v_timestamp_str% ===
+  If exists: Overwrite
+  Encoding: UTF-8
+
+--------------------------------------------------------------
+6. Call ShoppingProcess
+--------------------------------------------------------------
+Action: Run subflow → ShoppingProcess
+  Inputs:  v_address, v_pincode, v_budget, v_items_table, v_output_dir, v_timestamp_str
+  Outputs: v_cart_json
+
+--------------------------------------------------------------
+7. Build summary files
+--------------------------------------------------------------
+Action: Run PowerShell script
+  Script:
+    $result = & python 'D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\scripts\build_summary.py' '%v_cart_json%' '%v_output_dir%' 2>&1
+    Write-Output $result
+Store in: v_build_output
+
+Action: Run PowerShell script (parse paths from output)
+  Script:
+    $lines = '%v_build_output%' -split "`n"
+    $sum   = ($lines | Where-Object { $_ -match 'SUMMARY_PATH=' }) -replace 'SUMMARY_PATH=',''
+    $short = ($lines | Where-Object { $_ -match 'SHORT_PATH=' }) -replace 'SHORT_PATH=',''
+    Write-Output "SUM=$($sum.Trim())"
+    Write-Output "SHORT=$($short.Trim())"
+Store in: v_paths_output
+→ Parse SUM= → v_summary_path
+→ Parse SHORT= → v_short_path
+
+--------------------------------------------------------------
+8. Call SendEmail
+--------------------------------------------------------------
+Action: Run subflow → SendEmail
+  Inputs: v_email, v_summary_path, "Blinkit Shopping Summary - %v_timestamp_str%", v_output_dir
+
+--------------------------------------------------------------
+9. Call SendWhatsApp
+--------------------------------------------------------------
+Action: Run subflow → SendWhatsApp
+  Inputs: v_whatsapp, v_short_path, v_output_dir
+
+--------------------------------------------------------------
+10. Final log entry
+--------------------------------------------------------------
+Action: Write text to file (append)
+  File: %v_output_dir%\run_log.txt
+  Text: === Run completed: %v_timestamp_str% ===
+
+==============================================================
+END OF Main
+==============================================================

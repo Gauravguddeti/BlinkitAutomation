@@ -1,0 +1,103 @@
+==============================================================
+  SUBFLOW: ErrorHandler
+  Role: Centralised error handler — logs the failure, captures
+        a screenshot, closes the browser, and sends a failure
+        email. Called by other subflows on exception.
+        Never throws further exceptions.
+==============================================================
+
+INPUT VARIABLES:
+  v_step_name     (Text — which step failed, e.g. "address_verification")
+  v_error_message (Text)
+  v_output_dir    (Text)
+  v_to_email      (Text)
+
+OUTPUT VARIABLES: none (side effects only)
+
+--------------------------------------------------------------
+1. Timestamp
+--------------------------------------------------------------
+Action: Get current date and time → v_err_dt
+Action: Convert datetime to text (yyyy-MM-dd HH:mm:ss) → v_err_time
+
+--------------------------------------------------------------
+2. Write to run log
+--------------------------------------------------------------
+Action: Run PowerShell script
+  Script:
+    $dir = '%v_output_dir%'
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    Add-Content -Path "$dir\run_log.txt" `
+      -Value "[ERROR][$('%v_err_time%')] Step: %v_step_name% | %v_error_message%" `
+      -Encoding UTF8
+
+--------------------------------------------------------------
+3. Screenshot (full screen — captures whatever is visible)
+--------------------------------------------------------------
+Action: Take screenshot
+  Capture: Entire screen
+  Save to: %v_output_dir%\screenshots\error_%v_step_name%.png
+
+--------------------------------------------------------------
+4. Close browser (suppress errors if browser is not open)
+--------------------------------------------------------------
+[On block error → continue]
+Action: Close web browser — %v_browser%
+[End on block error]
+
+--------------------------------------------------------------
+5. Build failure email body
+--------------------------------------------------------------
+Action: Run PowerShell script
+  Script:
+    $body = "BLINKIT FLOW FAILURE`n`n" +
+            "Time  : %v_err_time%`n" +
+            "Step  : %v_step_name%`n" +
+            "Error : %v_error_message%`n`n" +
+            "See output\run_log.txt and output\screenshots\ for details.`n" +
+            "No order was placed."
+    $body | Set-Content -Path '%v_output_dir%\failure_body.txt' -Encoding UTF8
+
+--------------------------------------------------------------
+6. Send failure email
+--------------------------------------------------------------
+[On block error → continue (don't let email failure mask the original error)]
+Action: Run subflow → SendEmail
+  v_to_email     → v_to_email
+  v_summary_path → %v_output_dir%\failure_body.txt
+  v_subject      → Flow ERROR at step: %v_step_name%
+  v_output_dir   → v_output_dir
+[End on block error]
+
+--------------------------------------------------------------
+7. Final log entry
+--------------------------------------------------------------
+Action: Run PowerShell script
+  Script:
+    Add-Content -Path '%v_output_dir%\run_log.txt' `
+      -Value "[ErrorHandler] Handling complete. Failure email attempted." `
+      -Encoding UTF8
+
+--------------------------------------------------------------
+HOW TO WIRE ErrorHandler INTO OTHER SUBFLOWS
+--------------------------------------------------------------
+In PAD, wrap any risky block with an "On block error" action:
+
+  ┌─ On block error ──────────────────────────────────────────┐
+  │  Error variable: v_block_error                            │
+  │  On error: Run error block actions                        │
+  │                                                           │
+  │  [Inside error block:]                                    │
+  │  Set variable  v_step_name    = "description_of_step"    │
+  │  Set variable  v_error_message = %v_block_error%         │
+  │  Run subflow: ErrorHandler                               │
+  │  Stop flow                                               │
+  └───────────────────────────────────────────────────────────┘
+
+The error variable name (%v_block_error% above) is set when you
+configure the "On block error" action in PAD. Use the "Error message"
+property of that variable as the error text.
+
+==============================================================
+END OF ErrorHandler
+==============================================================

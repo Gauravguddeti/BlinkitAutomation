@@ -1,0 +1,91 @@
+==============================================================
+  SUBFLOW: SendEmail
+  Role: Sends the shopping summary via Gmail SMTP.
+        Tries Python first; falls back to PowerShell automatically.
+        Credentials come from environment variables only.
+==============================================================
+
+INPUT VARIABLES:
+  v_to_email      (Text)
+  v_summary_path  (Text — absolute path to summary.txt)
+  v_subject       (Text)
+  v_output_dir    (Text)
+
+OUTPUT VARIABLES:
+  v_email_result  (Text: "ok" or "error: ...")
+
+--------------------------------------------------------------
+1. Check Python availability
+--------------------------------------------------------------
+Action: Run PowerShell script
+  Script:
+    try { & python --version 2>&1 | Out-Null; Write-Output "PYTHON_OK" }
+    catch { Write-Output "PYTHON_MISSING" }
+Store in: v_python_check
+
+--------------------------------------------------------------
+2a. Send via Python (preferred path)
+--------------------------------------------------------------
+Action: If v_python_check Contains "PYTHON_OK"
+
+  Action: Run PowerShell script
+    Script:
+      $out = & python 'D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\scripts\send_email.py' `
+               '%v_to_email%' '%v_subject%' '%v_summary_path%' 2>&1
+      Write-Output $out
+    Store in: v_script_output
+
+--------------------------------------------------------------
+2b. Send via PowerShell (fallback path)
+--------------------------------------------------------------
+Action: Else
+
+  Action: Run PowerShell script
+    Script:
+      $out = & powershell -ExecutionPolicy Bypass -File `
+               'D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\scripts\send_email.ps1' `
+               -To '%v_to_email%' -Subject '%v_subject%' -BodyFile '%v_summary_path%' 2>&1
+      Write-Output $out
+    Store in: v_script_output
+
+Action: End If
+
+--------------------------------------------------------------
+3. Parse result
+--------------------------------------------------------------
+Action: If v_script_output Contains "EMAIL_SENT=true"
+  Set variable: v_email_result = ok
+  Write text to file (append): %v_output_dir%\run_log.txt
+    Text: [OK] Email sent to %v_to_email%
+Else
+  Set variable: v_email_result = error: %v_script_output%
+  Write text to file (append): %v_output_dir%\run_log.txt
+    Text: [ERROR] Email failed: %v_script_output%
+
+--------------------------------------------------------------
+4. Screenshot confirmation
+--------------------------------------------------------------
+Action: Run application
+  Application: [your browser executable path]
+  Arguments: https://mail.google.com/mail/u/0/#sent
+Action: Wait — 5 seconds
+Action: Take screenshot
+  Save to: %v_output_dir%\screenshots\email_sent.png
+
+[Return v_email_result]
+
+--------------------------------------------------------------
+STANDALONE TEST
+--------------------------------------------------------------
+Create a test flow named "TestEmail" in PAD:
+  1. Set variable  v_to_email      = guddetigaurav1@gmail.com
+  2. Set variable  v_summary_path  = D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output\summary.txt
+  3. Set variable  v_subject       = Test Email from PAD
+  4. Set variable  v_output_dir    = D:\projects\ineede assingment\gigacoreEnergy\grocery-assistant\output
+  5. Run subflow: SendEmail
+  6. Display message: %v_email_result%
+Run the test flow → confirm the email arrives in Gmail within 2 minutes.
+
+==============================================================
+END OF SendEmail
+==============================================================

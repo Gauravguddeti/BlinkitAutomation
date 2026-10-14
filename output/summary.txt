@@ -1,0 +1,12 @@
+﻿========================================
+Blinkit Grocery Run Summary
+========================================
+Run time : 2026-10-14 17:37:35
+Address  : Kondhwa Khurd, Pune
+
+Cart     : Rs137
+Budget   : Rs300
+Status   : within budget
+Items    : milk, bread, yogurt
+Guard    : No order placed
+========================================

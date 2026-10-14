@@ -1,0 +1,359 @@
+==============================================================
+  SUBFLOW: ShoppingProcess
+  Role: Opens Blinkit, sets delivery location, searches each
+        item, compares products, adds to cart, checks budget.
+        Enforces a URL guard — never reaches checkout.
+==============================================================
+
+INPUT VARIABLES:
+  v_address       (Text)
+  v_pincode       (Text)
+  v_budget        (Number)
+  v_items_table   (DataTable — from items.csv)
+  v_output_dir    (Text)
+  v_timestamp_str (Text)
+
+OUTPUT VARIABLES:
+  v_cart_json     (Text — JSON payload for build_summary.py)
+
+--------------------------------------------------------------
+BLOCK A — Open browser and load Blinkit
+--------------------------------------------------------------
+Action: Launch new Microsoft Edge   [or Launch new Chrome if Chrome is installed]
+  Initial URL: https://blinkit.com
+  Launch mode: New instance
+Store browser instance in: v_browser
+
+Action: Wait for web page content
+  Browser: v_browser
+  Wait for: Element exists
+  CSS selector: body
+  Timeout: 30 seconds
+
+--------------------------------------------------------------
+BLOCK B — Handle login wall
+--------------------------------------------------------------
+Action: If web page contains element
+  CSS: [data-testid="login-modal"]
+
+  If True:
+    Action: Display message
+      Title:   Manual Login Required
+      Message: Blinkit requires you to log in.
+               Complete the login on the browser window (OTP goes to your phone).
+               Click OK here only after the home page is fully loaded.
+      Buttons: OK
+    Action: Wait — 3 seconds
+    Action: Go to web page — https://blinkit.com
+    Action: Wait for web page content — body, 20 seconds
+
+--------------------------------------------------------------
+BLOCK C — Set delivery location
+--------------------------------------------------------------
+Action: Click UI element
+  Browser: v_browser
+  UI element: Location bar (capture by hovering over it in browser while in PAD element capture mode)
+  CSS selector: div[class*="LocationBar"]
+  Fallback XPath: //div[contains(@class,'LocationBar')]
+
+Action: Wait — 2 seconds
+
+Action: Populate text field
+  Browser: v_browser
+  UI element: Location search input
+  CSS: input[placeholder*="pincode"], input[placeholder*="Enter area"]
+  Value: %v_pincode%
+
+Action: Wait for element — autocomplete dropdown
+  CSS: ul[class*="suggestions"] li, div[class*="location-suggestion"]
+  Timeout: 10 seconds
+
+Action: Click UI element — first suggestion
+  CSS: ul[class*="suggestions"] li:first-child
+
+Action: Wait — 3 seconds
+
+--------------------------------------------------------------
+BLOCK D — Verify location
+--------------------------------------------------------------
+Action: Get details of element
+  CSS: div[class*="LocationBar__LocationName"]
+  Attribute: Own text
+Store in: v_shown_address
+
+Action: If NOT (v_shown_address Contains v_pincode OR v_shown_address Contains "Pune")
+  → Set v_step_name = "address_verification"
+  → Set v_error_message = "Shown address '%v_shown_address%' does not match expected pincode %v_pincode%"
+  → Run subflow: ErrorHandler
+  → Stop flow
+
+Action: Take screenshot
+  Save to: %v_output_dir%\screenshots\01_address.png
+
+Action: Write text to file (append)
+  File: %v_output_dir%\run_log.txt
+  Text: [OK] Address verified: %v_shown_address%
+
+--------------------------------------------------------------
+BLOCK E — Initialise item tracking
+--------------------------------------------------------------
+Action: Set variable  v_item_results_json = [
+Action: Set variable  v_items_first       = True
+
+--------------------------------------------------------------
+BLOCK F — Loop through each item
+--------------------------------------------------------------
+Action: For each row in v_items_table
+  Loop variable: v_row
+
+  F1. Extract row fields
+      v_item_name = %v_row['item']%
+      v_item_qty  = %v_row['qty']%       (convert to number)
+      v_item_maxp = %v_row['max_price']% (convert to number)
+
+  F2. Navigate to Blinkit home (clears previous search state)
+      Action: Go to web page — https://blinkit.com
+      Action: Wait — 2 seconds
+
+  F3. Click search bar
+      CSS: input[placeholder*="Search"]
+      Fallback: input[type="search"]
+
+  F4. Type item name
+      Action: Populate text field
+        CSS: input[placeholder*="Search"]
+        Value: %v_item_name%
+
+  F5. Press Enter to search
+      Action: Send keys — {Enter}   [Send keys to: Foreground window]
+      Action: Wait — 3 seconds
+
+  F6. Screenshot search results
+      Save to: %v_output_dir%\screenshots\search_%v_item_name%.png
+
+  F7. Extract product data via JavaScript
+      Action: Run JavaScript function on web page
+        Browser: v_browser
+        Function:
+          function GetProducts() {
+            var cards = document.querySelectorAll('div[class*="ProductCard"], div[class*="product-card"]');
+            var out = [];
+            for (var i = 0; i < Math.min(cards.length, 5); i++) {
+              var c    = cards[i];
+              var name = c.querySelector('div[class*="Title"], div[class*="name"], h3');
+              var price= c.querySelector('div[class*="Price"], span[class*="price"]');
+              var btn  = c.querySelector('button[class*="AddToCart"], button[aria-label*="Add"]');
+              out.push({
+                index:   i,
+                name:    name  ? name.innerText.trim()  : '',
+                price:   price ? parseFloat(price.innerText.replace(/[^0-9.]/g,'')) || 9999 : 9999,
+                inStock: btn   ? !btn.disabled && btn.innerText.indexOf('Stock') === -1 : false
+              });
+            }
+            return JSON.stringify(out);
+          }
+        Store result in: v_cards_json
+
+        Note: If "Run JavaScript function" is not in your PAD version, use
+              "Extract data from web page" to extract product names and prices as a table.
+
+  F8. Pick best product
+      Action: Run PowerShell script
+        Script:
+          $cards   = '%v_cards_json%' | ConvertFrom-Json
+          $max     = [decimal]'%v_item_maxp%'
+          $valid   = $cards | Where-Object { $_.inStock -eq $true -and $_.price -le $max }
+          if ($valid.Count -eq 0) {
+              Write-Output "CHOSEN_INDEX=-1"
+              Write-Output "CHOSEN_NAME=NONE"
+              Write-Output "CHOSEN_PRICE=0"
+              Write-Output "STATUS=over_max_price_or_out_of_stock"
+              Write-Output "ALTERNATIVES="
+          } else {
+              $best = $valid | Sort-Object price | Select-Object -First 1
+              $alts = ($valid | Where-Object { $_.index -ne $best.index } |
+                       ForEach-Object { "$($_.name) - Rs$($_.price)" }) -join "|"
+              Write-Output "CHOSEN_INDEX=$($best.index)"
+              Write-Output "CHOSEN_NAME=$($best.name)"
+              Write-Output "CHOSEN_PRICE=$($best.price)"
+              Write-Output "STATUS=ok"
+              Write-Output "ALTERNATIVES=$alts"
+          }
+        Store in: v_pick_output
+      Parse lines: CHOSEN_INDEX → v_chosen_index, CHOSEN_NAME → v_chosen_name,
+                   CHOSEN_PRICE → v_chosen_price, STATUS → v_item_status,
+                   ALTERNATIVES → v_alternatives
+
+  F9. Add to cart — handles both simple ADD and ADD-with-size-options popup
+
+      Action: If v_item_status == "ok"
+
+        STEP 1: Click the ADD button on the product card
+        Action: Run JavaScript function on web page
+          Browser: v_browser
+          Function name: AddItem
+          Function body:
+            function AddItem() {
+              try {
+                var cards = document.querySelectorAll(
+                  'div[class*="Product__UpdatedPlpProductCard"], div[class*="plp-product"], div[class*="ProductCard"]'
+                );
+                if (cards.length === 0) return 'NO_CARDS_FOUND';
+                var idx = parseInt('%v_chosen_index%') || 0;
+                if (idx < 0 || idx >= cards.length) idx = 0;
+                var card = cards[idx];
+                var addBtn = card.querySelector(
+                  'button[class*="AddToCart"], button[class*="add-to-cart"], button'
+                );
+                if (!addBtn) return 'NO_ADD_BUTTON';
+                addBtn.click();
+                return 'CLICKED_ADD';
+              } catch(e) { return 'ERROR: ' + e.message; }
+            }
+          Store result in: v_add_click_result
+
+        Action: Wait — 2 seconds
+
+        STEP 2: Check for size-options popup and click first (cheapest) option if present
+        Action: Run JavaScript function on web page
+          Browser: v_browser
+          Function name: HandlePopup
+          Function body:
+            function HandlePopup() {
+              try {
+                var popup = document.querySelector(
+                  'div[class*="VariantModal"], div[class*="variant-modal"], ' +
+                  'div[class*="UpdatedVariantCard"], div[class*="Variant"], ' +
+                  'div[class*="ItemVariant"]'
+                );
+                if (!popup) return 'NO_POPUP_DIRECT_ADD_OK';
+                // Popup open — click the first ADD button inside it (= cheapest/smallest size)
+                var btns = popup.querySelectorAll(
+                  'button[class*="AddToCart"], button[class*="add"], button'
+                );
+                if (btns.length === 0) return 'POPUP_NO_BUTTONS';
+                btns[0].click();
+                return 'POPUP_OPTION_CLICKED';
+              } catch(e) { return 'POPUP_ERROR: ' + e.message; }
+            }
+          Store result in: v_popup_result
+
+        Action: Wait — 2 seconds
+
+        Action: Run PowerShell script  [log add result]
+          Script:
+            Add-Content '%v_output_dir%\run_log.txt' -Value "[Cart] %v_item_name% | ADD: %v_add_click_result% | POPUP: %v_popup_result%" -Encoding UTF8
+
+      Action: Else
+        Action: Run PowerShell script
+          Script:
+            Add-Content '%v_output_dir%\run_log.txt' -Value "[SKIP] %v_item_name% — %v_item_status%" -Encoding UTF8
+
+  F10. Build JSON entry for this item
+       Action: Set variable  v_line_total = v_chosen_price * v_item_qty
+       Action: Run PowerShell script
+         Script:
+           $entry = '{"name":"%v_item_name%","chosen_product":"%v_chosen_name%",' +
+                    '"unit_price":%v_chosen_price%,"qty":%v_item_qty%,' +
+                    '"alternatives":["%v_alternatives%"],"status":"%v_item_status%"}'
+           Write-Output $entry
+         Store in: v_item_entry
+
+       Action: If v_items_first == True
+         v_item_results_json = %v_item_results_json%%v_item_entry%
+         v_items_first = False
+       Else
+         v_item_results_json = %v_item_results_json%,%v_item_entry%
+
+Action: End For each
+
+--------------------------------------------------------------
+BLOCK G — Cart verification and budget check
+--------------------------------------------------------------
+Action: Go to web page — https://blinkit.com/cart
+Action: Wait — 4 seconds
+
+Action: Take screenshot
+  Save to: %v_output_dir%\screenshots\cart_before.png
+
+Action: Get details of element
+  CSS: div[class*="CartTotal"], div[class*="grand-total"]
+  Attribute: Own text
+Store in: v_cart_total_text
+
+Action: Run PowerShell script
+  Script: Write-Output (('%v_cart_total_text%' -replace '[^0-9.]',''))
+Store in: v_cart_total_str
+Action: Convert text to number → v_cart_total
+
+Action: If v_cart_total > v_budget
+  v_over_budget = True
+  Write to log: [WARN] Cart Rs%v_cart_total% exceeds budget Rs%v_budget%
+  Display message: Cart total Rs%v_cart_total% exceeds your budget of Rs%v_budget%.
+                   Items to consider removing are shown in the cart.
+                   The flow will record this in the summary and continue.
+                   No order will be placed.
+Else
+  v_over_budget = False
+  Write to log: [OK] Cart Rs%v_cart_total% within budget Rs%v_budget%
+
+Action: Take screenshot
+  Save to: %v_output_dir%\screenshots\cart_final.png
+
+--------------------------------------------------------------
+BLOCK H — Checkout guard
+--------------------------------------------------------------
+Action: Get details of web page → URL → v_current_url
+
+Action: If v_current_url Contains "checkout"
+     OR v_current_url Contains "payment"
+     OR v_current_url Contains "place-order"
+  Set v_step_name    = "checkout_guard"
+  Set v_error_message = "GUARD: URL contains checkout/payment: %v_current_url%"
+  Write to log: [CRITICAL] %v_error_message%
+  Run subflow: ErrorHandler
+  Stop flow
+
+Action: Write to log: [OK] Checkout guard passed — URL: %v_current_url%. No order placed.
+
+--------------------------------------------------------------
+BLOCK I — Close browser and build return JSON
+--------------------------------------------------------------
+Action: Close web browser — v_browser
+
+Action: Set variable — v_item_results_json = %v_item_results_json%]
+
+Action: Run PowerShell script
+  Script:
+    $ob    = if ('%v_over_budget%' -eq 'True') { 'true' } else { 'false' }
+    $json  = '{"timestamp":"%v_timestamp_str%","address":"%v_address%",' +
+             '"pincode":"%v_pincode%","budget":%v_budget%,' +
+             '"items":%v_item_results_json%,"cart_total":%v_cart_total%,' +
+             '"over_budget":' + $ob + ',"failures":[]}'
+    Write-Output $json
+  Store in: v_cart_json
+
+[Return v_cart_json to Main]
+
+--------------------------------------------------------------
+SELECTOR NOTES
+--------------------------------------------------------------
+All CSS selectors below are tested against the live site at design time.
+Blinkit uses obfuscated class names that may change on deployment.
+If a selector stops working: press F12 on the live site, right-click the
+element in the Inspector, choose Copy → Copy selector, and update the
+UI element in PAD.
+
+Element             Primary selector                        Risk
+-----------         ---------------------------------       ------
+Location bar        div[class*="LocationBar"]               High
+Location text       div[class*="LocationBar__LocationName"] High
+Search input        input[placeholder*="Search"]            Medium
+Product card        div[class*="ProductCard"]               High
+Add button          button[class*="AddToCart"]              High
+Cart link           a[href="/cart"]                         Low
+Cart total          div[class*="CartTotal"]                 High
+
+==============================================================
+END OF ShoppingProcess
+==============================================================
