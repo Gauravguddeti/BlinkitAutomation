@@ -1,7 +1,13 @@
 # Blinkit Grocery Assistant
 ### Power Automate Desktop Flow | Gigacore Energy Internship Assignment
 
-> 🎬 **Demo Video** — [Watch on Google Drive](https://drive.google.com/file/d/1EYdc1V73cb7zr01nX0HSVIY2IgRyE5t2/view?usp=sharing) *(full recording — items added, guard triggered, email + WhatsApp sent)*
+<div align="center">
+  <a href="https://drive.google.com/file/d/1EYdc1V73cb7zr01nX0HSVIY2IgRyE5t2/view?usp=sharing">
+    <img src="./docs/demo_thumbnail.png" alt="Watch Demo — Blinkit Grocery Assistant" width="720"/>
+    <br/>
+    <b>▶ Click to Watch Demo Recording (Google Drive)</b>
+  </a>
+</div>
 
 ---
 
